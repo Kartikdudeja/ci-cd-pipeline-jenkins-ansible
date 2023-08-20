@@ -1,0 +1,96 @@
+
+- name: "Setup Tomcat8 & Deploy Artifact"
+  hosts: appsrvgrp
+  become: yes
+
+  vars:
+    TIMESTAMP: "{{ ansible_date_time.date }}_{{ ansible_date_time.hour }}_{{ ansible_date_time.minute }}"
+
+  tasks:
+
+    - name: "Download Latest Artifact file from the Nexus Repository"
+      get_url:
+        url: "http://{{ NEXUS_USER }}:{{ NEXUS_PASS }}@{{ NEXUS_IP }}:{{ NEXUS_PORT }}/repository/{{ REPONAME }}/{{ GROUP_ID }}/{{ ARTIFACT_ID }}/{{ BUILD }}-{{ TIME }}/{{ ARTIFACT_VERSION }}"
+        dest: "/tmp/{{ ARTIFACT_ID }}-{{ ARTIFACT_VERSION }}"
+      register: wardeploy
+      tags:
+       - deploy
+
+    - stat: 
+        path: /usr/local/tomcat8/webapps/ROOT
+      register: artifact_stat
+      tags:
+        - deploy
+
+    - name: "Stop Tomcat Service"
+      service:
+        name: tomcat
+        state: stopped
+      
+    - name: "Backup Old Artifact & Deploy New One"
+
+      block:
+      - name: "Archive ROOT directory with timestamp"
+        archive:
+          path: /usr/local/tomcat8/webapps/ROOT
+          dest: "/opt/ROOT_{{ TIMESTAMP }}.tgz"
+        when: artifact_stat.stat.exists
+        register: artifact_info
+
+      - name: "copy ROOT dir with old_ROOT name"
+        shell: cp -r ROOT old_ROOT
+        args:
+          chdir: /usr/local/tomcat8/webapps/
+
+      - name: "delete current artifact"
+        file:
+          path: "{{ item }}"
+          state: absent
+        when: archive_info.changed
+        loop:
+          - /usr/local/tomcat8/webapps/ROOT
+          - /usr/local/tomcat8/webapps/ROOT.war
+
+      - name: "Try to deploy artifact, else restore the previous old_ROOT"
+        block:
+          - name: "Deploy Artifact"
+            copy:
+              src: "/tmp/{{ ARTIFACT_ID }}-{{ ARTIFACT_VERSION }}"
+              dest: /usr/local/tomcat8/webapps/ROOT.war
+              remote_src: yes
+            register: deploy_info
+        
+        rescue:
+          - shell: cp -r old_ROOT ROOT
+            args:
+              chdir: /usr/local/tomcat8/webapps
+
+      rescue:
+        - name: "start tomcat service"
+          service:
+            name: tomcat
+            state: started
+
+    - name: "start tomcat service"
+      service:
+        name: tomcat
+        state: started
+      when: deploy_info.changed
+
+    - name: "Wait until ROOT.war is extracted to ROOT dir"
+      wait_for:
+        path: /usr/local/tomcat8/webapps/ROOT
+
+    - name: "Deploy web configuration file"
+      template:
+        src: templates/application.j2
+        dest: /usr/local/tomcat8/webapps/ROOT/WEB-INF/classes/application.properties
+        force: yes
+      notify:
+      - Restart Tomcat
+
+  handlers:
+    - name: "Restart tomcat service"
+      service:
+        name: tomcat
+        state: restarted
