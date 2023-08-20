@@ -1,0 +1,93 @@
+
+
+- name: "Deploy Tomcat Server"
+  hosts: appsrvgrp
+  become: yes
+
+  vars:
+    TOMCAT_URL: "https://archive.apache.org/dist/tomcat/tomcat-8/v8.5.37/bin/apache-tomcat-8.5.37.tar.gz"
+
+  tasks:
+
+    - name: "Install Java JDK on CentOS"
+      yum:
+        name: java-1.8.0-openjdk.x86_64
+        state: present
+      when: ansible_distribution == 'CentOS'
+
+    - name: "Install Java JDK on Ubuntu"
+      apt:
+        name: openjdk-8-jdk
+        state: present
+        update_cache: yes
+      when: ansible_distribution == 'Ubuntu'
+
+    - name: "Download Tomcat Tarball/binaries"
+      get_url:
+        url: "{{ TOMCAT_URL }}"
+        dest: /tmp/tomcat-8.tar.gz
+
+    - name: "Add tomcat group"
+      group:
+        name: tomcat
+        state: present
+
+    - name: "Add tomcat user"
+      user:
+        name: tomcat
+        group: tomcat
+        shell: /bin/nologin
+        home: /usr/local/tomcat8
+
+    - file:
+        path: /tmp/tomcat8
+        state: directory
+
+    - name: "Extract Tomcat Binaries"
+      unarchive:
+        src: /tmp/tomcat-8.tar.gz
+        dest: /tmp/tomcat8
+        remote_src: yes
+        list_files: yes
+      register: unarchive_info
+
+    - debug:
+      msg: "{{ unarchive_info.files[0].split('/')[0] }}"
+
+    - name: "Synchronize /tmp/tomcat8/tomcat_cont /usr/local/tomcat8"
+      synchronize:
+        src: "/tmp/tomcat8/{{ unarchive_info.files[0].split('/')[0] }}/"
+        dest: /usr/local/tomcat8
+      delegate_to: "{{ inventory_hostname }}"
+
+    - name: "Change Ownership of /usr/local/tomcat8"
+      file:
+        path: /usr/local/tomcat8
+        owner: tomcat
+        group: tomcat
+        recurse: yes
+
+    - name: "Setup Tomcat service file on CentOS 7"
+      template:
+        src: template/epel7-svcfile.j2
+        dest: /etc/systemd/system/tomcat.service
+        mode: "a+x"
+      when: ansible_distribution == 'CentOS' and ansible_distribution_major_version == '7'
+
+    - name: "Setup Tomcat service file on Ubuntu 16 and 18"
+      template:
+        src: template/ubuntu16-svcfile.j2
+        dest: /etc/systemd/system/tomcat.service
+        mode: "a+x"
+      when: ansible_distribution == 'Ubuntu' and ansible_distribution_major_version >= '16'
+
+    - name: "force systemd to re-read config"
+      systemd:
+        daemon_reload: yes
+      when: ansible_distribution_major_version >= '7' or ansible_distribution_major_version >= '16'
+
+    - name: "Start & Enable Tomcat Service"
+      service: 
+        name: tomcat
+        state: started
+        enabled: yes
